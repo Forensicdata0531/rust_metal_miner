@@ -1,0 +1,57 @@
+[package]
+name = "rust_metal_miner"
+version = "0.1.0"
+edition = "2021"
+authors = ["Jace Wheeler <jace.wheeler0531@icloud.com>"]
+description = "Metal-accelerated Bitcoin miner with SegWit support"
+license = "MIT"
+
+[[bin]]
+name = "rust_metal_miner"
+path = "src/main.rs"
+
+[dependencies]
+# Cryptography / hashing
+sha2 = { version = "0.10", features = ["compress"] }
+generic-array = "0.14"
+
+# GPU Metal bindings
+metal = "0.24"
+
+# Hex encoding/decoding
+hex = "0.4"
+
+# Serialization / RPC parsing
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+
+# Bitcoin primitives
+bitcoin = "=0.26.2"
+
+# Async HTTP
+reqwest = { version = "0.11", features = ["json", "rustls-tls"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Optional: filesystem helpers
+dirs = "5.0"
+
+# Optional: Objective-C interop for Metal
+objc-foundation = "0.1"
+
+# Misc
+block = "0.1.6"
+futures = "0.3.31"
+rand = "0.9.2"
+rand_chacha = "0.9.0"
+
+# Terminal UI
+crossterm = "0.27"
+tui = "0.19.0" # latest stable version
+
+byteorder = "1.5"
+itertools = "0.14.0"
+rayon = "1.11.0"
+
+bitcoin_hashes = { version = "0.11", package = "bitcoin_hashes" }
