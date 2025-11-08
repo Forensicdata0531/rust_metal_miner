@@ -1,12 +1,15 @@
+// src/ui.rs
+
 use crate::adaptive::{MinerMetrics, UiMessage};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::{Duration, Instant};
 use metal::Buffer;
-use crate::{LANES, NONCES_PER_THREAD};
+
+// ✅ Fix constants import
+use crate::constants::{LANES, NONCES_PER_THREAD};
 use crate::sha_helpers::{aligned_u32_buffer, aligned_f32_buffer};
 
-// ----------------- Fully Dynamic TUI with Adaptive Feedback Metrics -----------------
 use crossterm::{
     event::{self, Event as CEvent, KeyCode},
     execute,
@@ -22,23 +25,19 @@ use tui::{
     Terminal,
 };
 
-/// ----------------- Live UI Loop -----------------
 pub async fn run_ui(
     metrics: Arc<RwLock<MinerMetrics>>,
     mut ui_rx: tokio::sync::mpsc::UnboundedReceiver<UiMessage>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    // Terminal setup
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Rolling log buffer for status messages
     let mut logs: Vec<String> = Vec::new();
 
     loop {
-        // --- Handle incoming messages (metrics + log lines) ---
         while let Ok(msg) = ui_rx.try_recv() {
             match msg {
                 UiMessage::Metrics(updated) => {
@@ -48,13 +47,12 @@ pub async fn run_ui(
                 UiMessage::Status(line) => {
                     logs.push(line);
                     if logs.len() > 12 {
-                        logs.remove(0); // keep last 12 lines
+                        logs.remove(0);
                     }
                 }
             }
         }
 
-        // --- Read metrics snapshot ---
         let m = metrics.read().await.clone();
 
         terminal.draw(|f| {
@@ -64,17 +62,16 @@ pub async fn run_ui(
                 .margin(1)
                 .constraints(
                     [
-                        Constraint::Length(3),  // header
-                        Constraint::Length(5),  // adaptive gauges
-                        Constraint::Length(7),  // lane metrics
-                        Constraint::Min(4),     // nibble tree
-                        Constraint::Length(6),  // log output
+                        Constraint::Length(3),
+                        Constraint::Length(5),
+                        Constraint::Length(7),
+                        Constraint::Min(4),
+                        Constraint::Length(6),
                     ]
                     .as_ref(),
                 )
                 .split(size);
 
-            // ----------------- Header -----------------
             let header = Paragraph::new(format!(
                 "🧠 Rust Metal Miner — {:.3} MH/s | Total Hashes: {:>12}",
                 m.hashrate_mhs, m.total_hashes
@@ -83,7 +80,6 @@ pub async fn run_ui(
             .block(Block::default().borders(Borders::ALL).title("Status"));
             f.render_widget(header, chunks[0]);
 
-            // ----------------- Adaptive Parameter Gauges -----------------
             let gauge_chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints(
@@ -96,7 +92,6 @@ pub async fn run_ui(
                 )
                 .split(chunks[1]);
 
-            // Mask gauge
             let mask_g = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title("Mask"))
                 .ratio(m.mask.clamp(0.0, 1.0) as f64)
@@ -104,7 +99,6 @@ pub async fn run_ui(
                 .label(Span::raw(format!("{:.3}", m.mask)));
             f.render_widget(mask_g, gauge_chunks[0]);
 
-            // Prune gauge
             let prune_g = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title("Prune"))
                 .ratio(m.prune.clamp(0.0, 1.0) as f64)
@@ -112,7 +106,6 @@ pub async fn run_ui(
                 .label(Span::raw(format!("{:.3}", m.prune)));
             f.render_widget(prune_g, gauge_chunks[1]);
 
-            // Gain gauge
             let gain_g = Gauge::default()
                 .block(Block::default().borders(Borders::ALL).title("Gain"))
                 .ratio(m.gain.clamp(0.0, 1.0) as f64)
@@ -120,7 +113,6 @@ pub async fn run_ui(
                 .label(Span::raw(format!("{:.3}", m.gain)));
             f.render_widget(gain_g, gauge_chunks[2]);
 
-            // ----------------- Lane Telemetry -----------------
             let lane_lines: Vec<Spans> = if !m.avg_post.is_empty() {
                 itertools::izip!(&m.avg_post, &m.avg_fwht, &m.avg_cs)
                     .enumerate()
@@ -141,7 +133,6 @@ pub async fn run_ui(
                 .block(Block::default().borders(Borders::ALL).title("Lane Metrics"));
             f.render_widget(lane_panel, chunks[2]);
 
-            // ----------------- Nibble Tree / Diagnostics -----------------
             let nibble_lines: Vec<Spans> = m
                 .nibble_tree
                 .iter()
@@ -158,7 +149,6 @@ pub async fn run_ui(
                 .wrap(Wrap { trim: true });
             f.render_widget(nibble_panel, chunks[3]);
 
-            // ----------------- Log / Status Output -----------------
             let log_lines: Vec<Spans> = logs
                 .iter()
                 .map(|l| Spans::from(Span::styled(l, Style::default().fg(Color::LightCyan))))
@@ -169,7 +159,6 @@ pub async fn run_ui(
             f.render_widget(log_panel, chunks[4]);
         })?;
 
-        // Exit handler
         if event::poll(Duration::from_millis(100))? {
             if let CEvent::Key(key) = event::read()? {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {

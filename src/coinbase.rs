@@ -7,28 +7,42 @@ use bitcoin::{
     consensus::{deserialize, serialize},
     hash_types::TxMerkleNode,
     hashes::{sha256d, Hash},
-    Address, OutPoint,
+    Address, OutPoint, Script,
 };
 use serde_json::Value;
 use hex;
 use std::str::FromStr;
 use crate::merkle_root;
 
-// ----------------- Coinbase Helpers -----------------
-pub fn build_coinbase_from_template(template: &Value) -> Transaction {
-    let height = template["result"]["height"].as_u64().unwrap() as u32;
-    let coinbase_value = template["result"]["coinbasevalue"].as_u64().unwrap();
-    let payout_addr = Address::from_str("bc1qyux0tnvrusd9deq89h8er0ml4clhdwetp6ljp2").unwrap();
+/// ------------------------------------------------------------------------
+/// Build a coinbase transaction from a block template,
+/// embedding a custom UTF-8 message (e.g. “∞ Power Of My Quettahashes”)
+/// ------------------------------------------------------------------------
+pub fn build_coinbase_from_template(template: &Value, message: &[u8]) -> Transaction {
+    let height = template["result"]["height"].as_u64().unwrap_or(0) as u32;
+    let coinbase_value = template["result"]["coinbasevalue"].as_u64().unwrap_or(0);
+
+    // ✅ Miner payout address
+    let payout_addr = Address::from_str("bc1qyux0tnvrusd9deq89h8er0ml4clhdwetp6ljp2")
+        .expect("Invalid payout address");
     let output = TxOut {
         value: coinbase_value,
         script_pubkey: payout_addr.script_pubkey(),
     };
+
+    // ✅ Build coinbase input (includes block height + custom message)
+    let script_sig = ScriptBuilder::new()
+        .push_int(height as i64)
+        .push_slice(message)
+        .into_script();
+
     let input = TxIn {
         previous_output: OutPoint::default(),
-        script_sig: ScriptBuilder::new().push_int(height as i64).into_script(), // ✅ fixed
+        script_sig,
         sequence: 0xFFFFFFFF,
-        witness: vec![vec![0u8; 32]],
+        witness: vec![vec![0u8; 32]], // placeholder nonce
     };
+
     Transaction {
         version: 2,
         lock_time: 0,
@@ -37,10 +51,16 @@ pub fn build_coinbase_from_template(template: &Value) -> Transaction {
     }
 }
 
+/// ------------------------------------------------------------------------
+/// Insert GPU nonce directly into witness (for adaptive or hardware feedback)
+/// ------------------------------------------------------------------------
 pub fn insert_nonce_into_coinbase(coinbase: &mut Transaction, nonce: u32) {
     coinbase.input[0].witness[0] = nonce.to_le_bytes().to_vec();
 }
 
+/// ------------------------------------------------------------------------
+/// Assemble full block hex with embedded coinbase
+/// ------------------------------------------------------------------------
 pub fn assemble_block_hex(template: &Value, coinbase: &Transaction, nonce: u32) -> String {
     // Build transaction list
     let mut txs = vec![coinbase.clone()];
@@ -51,20 +71,22 @@ pub fn assemble_block_hex(template: &Value, coinbase: &Transaction, nonce: u32) 
         }
     }
 
-    let version = template["result"]["version"].as_u64().unwrap() as i32;
-    let prevhash =
-        sha256d::Hash::from_str(template["result"]["previousblockhash"].as_str().unwrap()).unwrap();
-    let time = template["result"]["curtime"].as_u64().unwrap() as u32;
-    let bits = u32::from_str_radix(template["result"]["bits"].as_str().unwrap(), 16).unwrap();
+    let version = template["result"]["version"].as_i64().unwrap_or(2) as i32;
+    let prevhash = sha256d::Hash::from_str(template["result"]["previousblockhash"].as_str().unwrap())
+        .unwrap();
+    let time = template["result"]["curtime"].as_u64().unwrap_or(0) as u32;
+    let bits = u32::from_str_radix(template["result"]["bits"].as_str().unwrap(), 16).unwrap_or(0);
 
     // Compute Merkle root
     let nodes: Vec<TxMerkleNode> = txs
         .iter()
         .map(|tx| TxMerkleNode::from(sha256d::Hash::from_inner(tx.txid().into_inner())))
         .collect();
-    let merkle_root_node: TxMerkleNode = merkle_root(nodes).into();
 
-    // Build Bitcoin block using renamed BtcBlock
+    let merkle_root_node: TxMerkleNode =
+        merkle_root(nodes.iter().map(|n| sha256d::Hash::from_inner(n.into_inner())).collect());
+
+    // Construct Bitcoin block
     let block = BtcBlock {
         header: BlockHeader {
             version,
@@ -80,11 +102,14 @@ pub fn assemble_block_hex(template: &Value, coinbase: &Transaction, nonce: u32) 
     hex::encode(serialize(&block))
 }
 
-// Safe insert of GPU extra nonce with VIN guard
+/// ------------------------------------------------------------------------
+/// Patch JSON coinbase (for testing via RPC template injection)
+/// ------------------------------------------------------------------------
 pub fn patch_insert_nonce_into_coinbase(coinbase: &mut serde_json::Value, nonce: u32) {
     if let Some(tx) = coinbase["result"]["transactions"].get_mut(0) {
         if let Some(vin) = tx["vin"].get_mut(0) {
-            let mut script_bytes = hex::decode(vin["coinbase"].as_str().unwrap_or("")).unwrap_or_default();
+            let mut script_bytes = hex::decode(vin["coinbase"].as_str().unwrap_or(""))
+                .unwrap_or_default();
             let extra_nonce = nonce.to_le_bytes().to_vec();
             let len = (1 + (nonce % 4) as usize).min(extra_nonce.len());
             script_bytes.extend_from_slice(&extra_nonce[..len]);
@@ -96,7 +121,9 @@ pub fn patch_insert_nonce_into_coinbase(coinbase: &mut serde_json::Value, nonce:
     }
 }
 
-// Build coinbase with automatic BIP34 block height insertion
+/// ------------------------------------------------------------------------
+/// BIP34 height injection helper
+/// ------------------------------------------------------------------------
 pub fn build_coinbase_from_template_with_height(template: &serde_json::Value) -> serde_json::Value {
     let mut coinbase = template.clone();
     let height = template["result"]["height"].as_u64().unwrap_or(0) as u32;
@@ -108,7 +135,8 @@ pub fn build_coinbase_from_template_with_height(template: &serde_json::Value) ->
 
     if let Some(tx) = coinbase["result"]["transactions"].get_mut(0) {
         if let Some(vin) = tx["vin"].get_mut(0) {
-            let prev_script = hex::decode(vin["coinbase"].as_str().unwrap_or("")).unwrap_or_default();
+            let prev_script =
+                hex::decode(vin["coinbase"].as_str().unwrap_or("")).unwrap_or_default();
             let mut final_script = coinbase_script;
             final_script.extend(prev_script);
             vin["coinbase"] = serde_json::Value::String(hex::encode(final_script));
